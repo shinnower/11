@@ -1,0 +1,25 @@
+
+name: Kaito Source Check
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Check repository
+        run: |
+          echo "Kaito repository is ready"
+          ls -la
+          find . -maxdepth 4 -type f \
+            ! -path './.git/*' | sort | head -300

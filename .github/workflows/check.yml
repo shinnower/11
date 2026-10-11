@@ -1,5 +1,5 @@
 
-name: Kaito Source Check
+name: Kaito Build
 
 on:
   workflow_dispatch:
@@ -11,15 +11,38 @@ permissions:
   contents: read
 
 jobs:
-  check:
+  build:
+    name: Package Kaito Source
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
 
-      - name: Check repository
+      - name: Inspect repository
+        shell: bash
         run: |
-          echo "Kaito repository is ready"
-          ls -la
-          find . -maxdepth 4 -type f \
+          set -e
+          echo "Repository files:"
+          find . -maxdepth 5 -type f \
             ! -path './.git/*' | sort | head -300
+
+      - name: Package source files
+        shell: bash
+        run: |
+          set -e
+          mkdir -p output
+          zip -r output/Kaito-Source.zip . \
+            -x './.git/*' \
+               './output/*' \
+               './.github/*'
+          echo "Source archive created:"
+          ls -lh output/
+
+      - name: Upload downloadable files
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kaito-Build
+          path: output/Kaito-Source.zip
+          if-no-files-found: error
+          retention-days: 7

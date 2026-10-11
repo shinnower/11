@@ -4,45 +4,68 @@ name: Kaito Build
 on:
   workflow_dispatch:
   push:
-    branches:
-      - main
+    branches: [main]
 
 permissions:
   contents: read
 
 jobs:
   build:
-    name: Package Kaito Source
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout source
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Inspect repository
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
         shell: bash
         run: |
           set -e
-          echo "Repository files:"
-          find . -maxdepth 5 -type f \
+          if [ -f package.json ]; then
+            npm ci
+          else
+            echo "ERROR: package.json not found"
+            exit 1
+          fi
+
+      - name: Check build scripts
+        shell: bash
+        run: |
+          echo "Available package scripts:"
+          npm run
+          echo "Build-related files:"
+          find . -maxdepth 3 -type f \
+            ! -path './node_modules/*' \
             ! -path './.git/*' | sort | head -300
 
-      - name: Package source files
+      - name: Run project build
         shell: bash
         run: |
           set -e
-          mkdir -p output
-          zip -r output/Kaito-Source.zip . \
-            -x './.git/*' \
-               './output/*' \
-               './.github/*'
-          echo "Source archive created:"
-          ls -lh output/
+          node -e "
+            const p = require('./package.json');
+            console.log(JSON.stringify(p.scripts || {}, null, 2));
+            if (!p.scripts || !p.scripts.build) {
+              console.error('No build script defined in package.json');
+              process.exit(1);
+            }
+          "
+          npm run build
 
-      - name: Upload downloadable files
+      - name: Upload generated files
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: Kaito-Build
-          path: output/Kaito-Source.zip
-          if-no-files-found: error
+          name: Kaito-Build-Output
+          path: |
+            **/Assembly-CSharp-patch.bytes
+            **/localConfig.json
+            dist/**
+            build/**
+          if-no-files-found: warn
           retention-days: 7

@@ -16,15 +16,11 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-      - name: Prepare workspace
+      - name: Extract source
         shell: bash
         run: |
           set -e
-          mkdir -p source output diagnostics
-      - name: Extract Kaito source
-        shell: bash
-        run: |
-          set -e
+          mkdir -p source diagnostics output
           ZIP_FILE="Kaito-source.zip"
           if [ ! -f "$ZIP_FILE" ]; then
             ZIP_FILE="$(find . -maxdepth 5 -type f \
@@ -36,32 +32,61 @@ jobs:
             exit 1
           fi
           unzip -o "$ZIP_FILE" -d source
-          echo "=== Source files ==="
-          find source -maxdepth 3 -type f | sort
-      - name: Inspect build configuration
+      - name: Diagnose runtime preparation
         shell: bash
         run: |
           set -e
-          cd source
-          echo "=== build.cjs ==="
-          sed -n '1,160p' build.cjs
-          echo "=== package.cjs ==="
-          sed -n '1,160p' package.cjs
-          echo "=== README.md ==="
-          sed -n '1,200p' README.md
+          {
+            echo "=== All source files ==="
+            find source -type f \
+              ! -path '*/node_modules/*' | sort
+            echo
+            echo "=== Runtime preparation references ==="
+            grep -RInE \
+              'prepare-runtime-test|runtime-test|const core|path\.resolve' \
+              source \
+              --include='*.cjs' \
+              --include='*.js' \
+              --include='*.md' || true
+            echo
+            echo "=== build.cjs ==="
+            sed -n '1,240p' source/build.cjs
+            echo
+            echo "=== package.cjs ==="
+            sed -n '1,240p' source/package.cjs
+            echo
+            echo "=== README ==="
+            sed -n '1,240p' source/README.md
+          } | tee diagnostics/runtime-diagnosis.txt
+      - name: Check required preparation script
+        shell: bash
+        run: |
+          set -e
+          PREP="$(find source -type f \
+            -name 'prepare-runtime-test.cjs' \
+            ! -path '*/node_modules/*' | head -1)"
+          if [ -z "$PREP" ]; then
+            echo "::error::Thiếu prepare-runtime-test.cjs trong source."
+            echo "Không tự tạo runtime-test giả."
+            echo "Xem artifact Kaito-Diagnostics để xác định source cần bổ sung."
+            exit 1
+          fi
+          echo "Preparation script found: $PREP"
+      - name: Prepare runtime test
+        shell: bash
+        run: |
+          set -e
+          PREP="$(find source -type f \
+            -name 'prepare-runtime-test.cjs' \
+            ! -path '*/node_modules/*' | head -1)"
+          cd "$(dirname "$PREP")"
+          node "$(basename "$PREP")"
       - name: Build Kaito
-        id: build
         shell: bash
         run: |
           set -e
           cd source
-          echo "Node version:"
-          node --version
-          echo "Build directory:"
-          pwd
-          echo "Running build.cjs with source path..."
-          node build.cjs "$PWD" \
-            2>&1 | tee ../diagnostics/build.log
+          node build.cjs "$PWD"
       - name: Run tests
         if: success()
         shell: bash
@@ -69,14 +94,12 @@ jobs:
           set -e
           cd source
           if [ -f test.cjs ]; then
-            node test.cjs \
-              2>&1 | tee ../diagnostics/test.log
+            node test.cjs
           fi
           if [ -f verify-declarations.cjs ]; then
-            node verify-declarations.cjs \
-              2>&1 | tee ../diagnostics/verify.log
+            node verify-declarations.cjs
           fi
-      - name: Collect output files
+      - name: Collect output
         if: always()
         shell: bash
         run: |
@@ -85,27 +108,28 @@ jobs:
             source/dist \
             source/build \
             source/out \
-            source/artifacts
+            source/artifacts \
+            runtime-test
           do
             if [ -d "$DIR" ]; then
               cp -R "$DIR"/. output/ 2>/dev/null || true
             fi
           done
-          echo "=== Output files ==="
+          echo "=== Output ==="
           find output -type f | sort
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kaito-Diagnostics
+          path: diagnostics/
+          if-no-files-found: warn
+          retention-days: 7
       - name: Upload build output
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: Kaito-Build-Output
           path: output/
-          if-no-files-found: warn
-          retention-days: 7
-      - name: Upload diagnostic logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: Kaito-Diagnostics
-          path: diagnostics/
           if-no-files-found: warn
           retention-days: 7

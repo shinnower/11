@@ -1,67 +1,86 @@
 name: Kaito Build
+
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches:
+      - main
+
 permissions:
   contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-      - name: Inspect repository
-        shell: bash
-        run: |
-          set -e
-          echo "Repository root:"
-          pwd
-          echo "Files:"
-          find . -maxdepth 4 -type f \
-            ! -path './.git/*' \
-            ! -path './node_modules/*' \
-            | sort | head -500
-          echo "Project manifests:"
-          find . -maxdepth 5 -type f \
-            \( -name package.json \
-            -o -name package-lock.json \
-            -o -name pnpm-lock.yaml \
-            -o -name yarn.lock \
-            -o -name '*.sln' \
-            -o -name '*.csproj' \
-            -o -name '*.xcodeproj' \
-            -o -name '*.gradle' \
-            -o -name Cargo.toml \
-            -o -name pyproject.toml \
-            -o -name Makefile \) \
-            ! -path './.git/*' \
-            ! -path './node_modules/*' \
-            | sort
-      - name: Setup Node.js
-        if: ${{ hashFiles('package.json', '**/package.json') != '' }}
+
+      - name: Prepare tools
         uses: actions/setup-node@v4
         with:
           node-version: 20
+
+      - name: Extract Kaito source
+        shell: bash
+        run: |
+          set -e
+
+          mkdir -p source
+
+          if [ -f "Kaito-source.zip" ]; then
+            unzip -o "Kaito-source.zip" -d source
+          else
+            ZIP_FILE="$(find . -maxdepth 4 -type f -iname '*.zip' \
+              ! -path './.git/*' | head -1)"
+
+            if [ -z "$ZIP_FILE" ]; then
+              echo "::error::Không tìm thấy file ZIP source."
+              exit 1
+            fi
+
+            echo "Extracting: $ZIP_FILE"
+            unzip -o "$ZIP_FILE" -d source
+          fi
+
+          echo "=== Source files ==="
+          find source -maxdepth 5 -type f \
+            ! -path '*/node_modules/*' \
+            | sort | head -300
+
+          echo "=== Project manifests ==="
+          find source -type f \( \
+            -name package.json -o \
+            -name package-lock.json -o \
+            -name pnpm-lock.yaml -o \
+            -name yarn.lock -o \
+            -name '*.csproj' -o \
+            -name '*.sln' -o \
+            -name Cargo.toml -o \
+            -name pyproject.toml -o \
+            -name Makefile \
+          \) ! -path '*/node_modules/*' -print
+
       - name: Install Node dependencies
         shell: bash
         run: |
           set -e
-          if [ -f package.json ]; then
-            cd .
-          else
-            PKG="$(find . -mindepth 2 -maxdepth 5 \
-              -type f -name package.json \
-              ! -path './node_modules/*' \
-              ! -path './.git/*' | head -1)"
-            if [ -z "$PKG" ]; then
-              echo "No package.json found. This repository may not be a Node.js project."
-              echo "Skipping npm installation."
-              exit 0
-            fi
-            cd "$(dirname "$PKG")"
+
+          PKG="$(find source -type f -name package.json \
+            ! -path '*/node_modules/*' \
+            | head -1)"
+
+          if [ -z "$PKG" ]; then
+            echo "Không có package.json; bỏ qua cài npm."
+            exit 0
           fi
-          echo "Node project directory: $(pwd)"
+
+          PROJECT_DIR="$(dirname "$PKG")"
+          cd "$PROJECT_DIR"
+
+          echo "Node project: $PROJECT_DIR"
+
           if [ -f package-lock.json ]; then
             npm ci
           elif [ -f pnpm-lock.yaml ]; then
@@ -73,47 +92,74 @@ jobs:
           else
             npm install
           fi
-      - name: Build Node project
+
+      - name: Build Kaito project
         shell: bash
         run: |
           set -e
-          PKG=""
-          if [ -f package.json ]; then
-            PKG="./package.json"
+
+          PKG="$(find source -type f -name package.json \
+            ! -path '*/node_modules/*' \
+            | head -1)"
+
+          if [ -n "$PKG" ]; then
+            PROJECT_DIR="$(dirname "$PKG")"
+            cd "$PROJECT_DIR"
+
+            HAS_BUILD="$(node -e \
+              "const p=require('./package.json'); \
+              process.stdout.write(p.scripts?.build ? 'yes' : 'no')")"
+
+            if [ "$HAS_BUILD" = "yes" ]; then
+              npm run build
+            else
+              echo "::error::package.json không có script build."
+              exit 1
+            fi
+
+          elif find source -type f \( \
+            -name '*.csproj' -o \
+            -name '*.sln' -o \
+            -name Cargo.toml -o \
+            -name pyproject.toml -o \
+            -name Makefile \
+          \) | grep -q .; then
+            echo "::error::Đã tìm thấy manifest nhưng chưa xác định được lệnh build phù hợp."
+            echo "Kiểm tra danh sách file ở bước Extract Kaito source."
+            exit 1
+
           else
-            PKG="$(find . -mindepth 2 -maxdepth 5 \
-              -type f -name package.json \
-              ! -path './node_modules/*' \
-              ! -path './.git/*' | head -1)"
-          fi
-          if [ -z "$PKG" ]; then
-            echo "ERROR: No package.json found."
-            echo "Cannot determine the build command automatically."
-            echo "Check the repository files and select the correct build tool."
+            echo "::error::Không tìm thấy cấu hình build được hỗ trợ trong source."
+            echo "Không thể tạo artifact hợp lệ khi chưa biết loại dự án."
             exit 1
           fi
-          PROJECT_DIR="$(dirname "$PKG")"
-          cd "$PROJECT_DIR"
-          node -e "
-            const p = require('./package.json');
-            console.log('Package:', p.name || '(unnamed)');
-            console.log('Scripts:', JSON.stringify(p.scripts || {}, null, 2));
-            if (!p.scripts || !p.scripts.build) {
-              console.error('ERROR: package.json has no build script.');
-              process.exit(1);
-            }
-          "
-          npm run build
-      - name: Upload generated files
+
+      - name: Collect generated files
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p output
+
+          for DIR in source/dist source/build source/out dist build out; do
+            if [ -d "$DIR" ]; then
+              cp -R "$DIR"/. output/ 2>/dev/null || true
+            fi
+          done
+
+          find source -type f \( \
+            -name 'Assembly-CSharp-patch.bytes' -o \
+            -name 'localConfig.json' \
+          \) ! -path '*/node_modules/*' \
+            -exec cp --parents {} output/ \; 2>/dev/null || true
+
+          echo "=== Output files ==="
+          find output -type f | sort
+
+      - name: Upload Kaito artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: Kaito-Build-Output
-          path: |
-            **/Assembly-CSharp-patch.bytes
-            **/localConfig.json
-            **/dist/**
-            **/build/**
-            **/out/**
+          path: output/**
           if-no-files-found: warn
           retention-days: 7

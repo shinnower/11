@@ -7,86 +7,100 @@ on:
 permissions:
   contents: read
 jobs:
-  inspect:
+  build:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-      - name: Inspect Kaito source
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Extract Kaito source
         shell: bash
         run: |
-          mkdir -p diagnostics extracted
-          {
-            echo "=== Repository files ==="
-            find . -maxdepth 4 -type f \
-              ! -path './.git/*' \
-              ! -path './.github/*' \
-              | sort
-            echo
-            echo "=== ZIP archives ==="
-            find . -maxdepth 5 -type f \
-              -iname '*.zip' \
-              ! -path './.git/*' \
-              -print
-          } | tee diagnostics/repository.txt
-          ZIP_FILE="$(find . -maxdepth 5 -type f \
-            -iname 'Kaito-source.zip' \
-            ! -path './.git/*' | head -1)"
-          if [ -z "$ZIP_FILE" ]; then
-            ZIP_FILE="$(find . -maxdepth 5 -type f \
-              -iname '*.zip' \
-              ! -path './.git/*' | head -1)"
+          set -e
+          mkdir -p source output diagnostics
+          ZIP_FILE="Kaito-source.zip"
+          if [ ! -f "$ZIP_FILE" ]; then
+            echo "::error::Không tìm thấy Kaito-source.zip"
+            exit 1
           fi
-          if [ -z "$ZIP_FILE" ]; then
-            echo "No ZIP archive found." \
-              | tee diagnostics/error.txt
+          unzip -o "$ZIP_FILE" -d source
+          echo "=== Source files ==="
+          find source -maxdepth 3 -type f | sort
+      - name: Inspect build instructions
+        shell: bash
+        run: |
+          set -e
+          echo "=== README ==="
+          if [ -f source/README.md ]; then
+            cat source/README.md
           else
-            echo "Archive: $ZIP_FILE" \
-              | tee diagnostics/archive.txt
-            unzip -l "$ZIP_FILE" \
-              > diagnostics/zip-contents.txt 2>&1 || true
-            unzip -o "$ZIP_FILE" -d extracted \
-              > diagnostics/extract-log.txt 2>&1 || true
-            {
-              echo "=== Files inside extracted source ==="
-              find extracted -type f \
-                ! -path '*/node_modules/*' \
-                | sort
-              echo
-              echo "=== File types ==="
-              find extracted -type f \
-                ! -path '*/node_modules/*' \
-                -exec file {} \;
-            } > diagnostics/source-details.txt 2>&1
-            echo "=== ZIP contents ==="
-            cat diagnostics/zip-contents.txt
-            echo "=== Extracted source ==="
-            cat diagnostics/source-details.txt
+            echo "README.md not found"
           fi
-      - name: Prepare diagnostic artifact
+          echo "=== package.cjs ==="
+          if [ -f source/package.cjs ]; then
+            sed -n '1,240p' source/package.cjs
+          fi
+          echo "=== build.cjs ==="
+          if [ -f source/build.cjs ]; then
+            sed -n '1,260p' source/build.cjs
+          else
+            echo "::error::Không tìm thấy build.cjs"
+            exit 1
+          fi
+      - name: Build Kaito
+        shell: bash
+        run: |
+          set -e
+          cd source
+          echo "Running Kaito build script..."
+          node build.cjs
+      - name: Run Kaito tests
+        shell: bash
+        run: |
+          set -e
+          cd source
+          if [ -f test.cjs ]; then
+            node test.cjs
+          else
+            echo "No test.cjs; skipping tests."
+          fi
+          if [ -f verify-declarations.cjs ]; then
+            node verify-declarations.cjs
+          fi
+      - name: Collect build outputs
         if: always()
         shell: bash
         run: |
-          mkdir -p diagnostics
-          if [ -d extracted ]; then
-            find extracted -type f \
-              ! -path '*/node_modules/*' \
-              | sort > diagnostics/source-files.txt
-          fi
-          echo "Diagnostic collection completed."
-      - name: Upload diagnostics
+          mkdir -p output
+          for DIR in \
+            source/dist \
+            source/build \
+            source/out \
+            source/target \
+            source/artifacts
+          do
+            if [ -d "$DIR" ]; then
+              cp -R "$DIR"/. output/ 2>/dev/null || true
+            fi
+          done
+          find source -maxdepth 4 -type f \( \
+            -name '*.dll' -o \
+            -name '*.so' -o \
+            -name '*.dylib' -o \
+            -name '*.bytes' -o \
+            -name '*.json' \
+          \) ! -path '*/node_modules/*' \
+            -exec cp --parents {} output/ \; 2>/dev/null || true
+          echo "=== Collected files ==="
+          find output -type f | sort
+      - name: Upload Kaito build output
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: Kaito-Diagnostics
-          path: diagnostics/
-          if-no-files-found: warn
-          retention-days: 7
-      - name: Upload extracted source
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: Kaito-Extracted-Source
-          path: extracted/
+          name: Kaito-Build-Output
+          path: output/
           if-no-files-found: warn
           retention-days: 7

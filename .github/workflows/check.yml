@@ -7,201 +7,74 @@ on:
 permissions:
   contents: read
 jobs:
-  build:
+  inspect:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-      - name: Prepare directories
+      - name: Inspect Kaito source
         shell: bash
         run: |
-          set -e
-          mkdir -p source diagnostics output
-      - name: Extract Kaito source
-        shell: bash
-        run: |
-          set -e
-          ZIP_FILE=""
-          if [ -f "Kaito-source.zip" ]; then
-            ZIP_FILE="Kaito-source.zip"
-          else
+          mkdir -p diagnostics extracted
+          {
+            echo "=== Repository files ==="
+            find . -maxdepth 4 -type f \
+              ! -path './.git/*' \
+              ! -path './.github/*' \
+              | sort
+            echo
+            echo "=== ZIP archives ==="
+            find . -maxdepth 5 -type f \
+              -iname '*.zip' \
+              ! -path './.git/*' \
+              -print
+          } | tee diagnostics/repository.txt
+          ZIP_FILE="$(find . -maxdepth 5 -type f \
+            -iname 'Kaito-source.zip' \
+            ! -path './.git/*' | head -1)"
+          if [ -z "$ZIP_FILE" ]; then
             ZIP_FILE="$(find . -maxdepth 5 -type f \
               -iname '*.zip' \
               ! -path './.git/*' | head -1)"
           fi
           if [ -z "$ZIP_FILE" ]; then
-            echo "::error::Không tìm thấy file ZIP source."
-            exit 1
-          fi
-          echo "Source archive: $ZIP_FILE"
-          unzip -o "$ZIP_FILE" -d source
-          unzip -l "$ZIP_FILE" > diagnostics/zip-contents.txt
-          find source -type f \
-            ! -path '*/node_modules/*' \
-            | sort > diagnostics/source-files.txt
-          find source -type f \
-            ! -path '*/node_modules/*' \
-            -exec file {} \; \
-            > diagnostics/file-types.txt
-          echo "=== ZIP contents ==="
-          cat diagnostics/zip-contents.txt
-          echo "=== Source files ==="
-          cat diagnostics/source-files.txt
-          echo "=== File types ==="
-          cat diagnostics/file-types.txt
-      - name: Detect project type
-        id: detect
-        shell: bash
-        run: |
-          set -e
-          TYPE="unknown"
-          if find source -type f -name package.json \
-            ! -path '*/node_modules/*' | grep -q .; then
-            TYPE="node"
-          elif find source -type f \
-            \( -name '*.sln' -o -name '*.csproj' \) \
-            | grep -q .; then
-            TYPE="dotnet"
-          elif find source -type f -name Cargo.toml \
-            | grep -q .; then
-            TYPE="rust"
-          elif find source -type f -name pyproject.toml \
-            | grep -q .; then
-            TYPE="python"
-          elif find source -type f \
-            -path '*/ProjectSettings/ProjectVersion.txt' \
-            | grep -q .; then
-            TYPE="unity"
-          elif find source -type f -name Makefile \
-            | grep -q .; then
-            TYPE="make"
-          fi
-          echo "type=$TYPE" >> "$GITHUB_OUTPUT"
-          echo "Detected project type: $TYPE"
-      - name: Setup Node.js
-        if: steps.detect.outputs.type == 'node'
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-      - name: Build Node.js project
-        if: steps.detect.outputs.type == 'node'
-        shell: bash
-        run: |
-          set -e
-          PKG="$(find source -type f -name package.json \
-            ! -path '*/node_modules/*' | head -1)"
-          PROJECT_DIR="$(dirname "$PKG")"
-          cd "$PROJECT_DIR"
-          echo "Project directory: $PROJECT_DIR"
-          if [ -f package-lock.json ]; then
-            npm ci
-          elif [ -f pnpm-lock.yaml ]; then
-            corepack enable
-            pnpm install --frozen-lockfile
-          elif [ -f yarn.lock ]; then
-            corepack enable
-            yarn install --frozen-lockfile
+            echo "No ZIP archive found." \
+              | tee diagnostics/error.txt
           else
-            npm install
+            echo "Archive: $ZIP_FILE" \
+              | tee diagnostics/archive.txt
+            unzip -l "$ZIP_FILE" \
+              > diagnostics/zip-contents.txt 2>&1 || true
+            unzip -o "$ZIP_FILE" -d extracted \
+              > diagnostics/extract-log.txt 2>&1 || true
+            {
+              echo "=== Files inside extracted source ==="
+              find extracted -type f \
+                ! -path '*/node_modules/*' \
+                | sort
+              echo
+              echo "=== File types ==="
+              find extracted -type f \
+                ! -path '*/node_modules/*' \
+                -exec file {} \;
+            } > diagnostics/source-details.txt 2>&1
+            echo "=== ZIP contents ==="
+            cat diagnostics/zip-contents.txt
+            echo "=== Extracted source ==="
+            cat diagnostics/source-details.txt
           fi
-          node -e "
-            const p = require('./package.json');
-            console.log(JSON.stringify(p.scripts || {}, null, 2));
-            if (!p.scripts || !p.scripts.build) {
-              console.error('Missing build script');
-              process.exit(1);
-            }
-          "
-          npm run build
-      - name: Build .NET project
-        if: steps.detect.outputs.type == 'dotnet'
-        shell: bash
-        run: |
-          set -e
-          sudo apt-get update
-          sudo apt-get install -y dotnet-sdk-8.0
-          PROJECT="$(find source -type f \
-            \( -name '*.sln' -o -name '*.csproj' \) \
-            | head -1)"
-          if [ -z "$PROJECT" ]; then
-            echo "::error::Không tìm thấy solution hoặc project .NET."
-            exit 1
-          fi
-          dotnet build "$PROJECT" --configuration Release
-      - name: Build Rust project
-        if: steps.detect.outputs.type == 'rust'
-        shell: bash
-        run: |
-          set -e
-          sudo apt-get update
-          sudo apt-get install -y cargo rustc
-          MANIFEST="$(find source -type f \
-            -name Cargo.toml | head -1)"
-          cargo build \
-            --manifest-path "$MANIFEST" \
-            --release
-      - name: Check Python project
-        if: steps.detect.outputs.type == 'python'
-        shell: bash
-        run: |
-          set -e
-          echo "Python project detected."
-          echo "Review diagnostics/source-files.txt to determine"
-          echo "the appropriate build command for this project."
-          exit 1
-      - name: Check Unity project
-        if: steps.detect.outputs.type == 'unity'
-        shell: bash
-        run: |
-          set -e
-          echo "Unity project detected."
-          echo "A compatible Unity Editor and required modules"
-          echo "are needed to build the actual game."
-          echo "This workflow does not fabricate a Unity build."
-          exit 1
-      - name: Check Make project
-        if: steps.detect.outputs.type == 'make'
-        shell: bash
-        run: |
-          set -e
-          MAKEFILE="$(find source -type f \
-            -name Makefile | head -1)"
-          echo "Makefile found: $MAKEFILE"
-          echo "Review the Makefile before selecting a build target."
-          exit 1
-      - name: Report unknown project
-        if: steps.detect.outputs.type == 'unknown'
-        shell: bash
-        run: |
-          echo "::error::Không nhận diện được loại dự án."
-          echo "Xem diagnostics/source-files.txt để biết cấu trúc source."
-          exit 1
-      - name: Collect build outputs
+      - name: Prepare diagnostic artifact
         if: always()
         shell: bash
         run: |
-          mkdir -p output
-          for DIR in \
-            source/dist \
-            source/build \
-            source/out \
-            source/target/release \
-            dist \
-            build \
-            out
-          do
-            if [ -d "$DIR" ]; then
-              cp -R "$DIR"/. output/ 2>/dev/null || true
-            fi
-          done
-          find source -type f \( \
-            -name 'Assembly-CSharp-patch.bytes' -o \
-            -name 'localConfig.json' \
-          \) ! -path '*/node_modules/*' \
-            -exec cp --parents {} output/ \; 2>/dev/null || true
-          echo "=== Output files ==="
-          find output -type f | sort
-      - name: Upload diagnostic logs
+          mkdir -p diagnostics
+          if [ -d extracted ]; then
+            find extracted -type f \
+              ! -path '*/node_modules/*' \
+              | sort > diagnostics/source-files.txt
+          fi
+          echo "Diagnostic collection completed."
+      - name: Upload diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -209,11 +82,11 @@ jobs:
           path: diagnostics/
           if-no-files-found: warn
           retention-days: 7
-      - name: Upload build output
+      - name: Upload extracted source
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: Kaito-Build-Output
-          path: output/
+          name: Kaito-Extracted-Source
+          path: extracted/
           if-no-files-found: warn
           retention-days: 7
